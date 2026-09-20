@@ -29,6 +29,11 @@ module Asaas
         response = client(opts).request(:get, "#{resource_path}/#{id}/paymentInfo")
         AsaasObject.construct_from(response)
       end
+
+      def self.pix_qr_code(id, opts = {})
+        response = client(opts).request(:get, "#{resource_path}/#{id}/pixQrCode")
+        AsaasObject.construct_from(response)
+      end
     end
   end
 end

@@ -15,6 +15,68 @@ RSpec.describe Asaas::Resources::Payment do
       expect(result).to be_a(Asaas::AsaasObject)
       expect(result.status).to eq("PENDING")
     end
+
+    it "does not retry a retryable server error when retryable is false" do
+      Asaas.configure do |config|
+        config.max_retries = 2
+        config.retry_delay = 0
+      end
+      request = stub_request(:post, "#{ASAAS_BASE_URL}/payments")
+                .with(
+                  headers: { "access_token" => "sub_key" },
+                  body: { "customer" => "cus_1", "billingType" => "PIX", "value" => 100 }
+                )
+                .to_return(status: 503, body: { errors: [{ description: "Unavailable" }] }.to_json)
+
+      expect do
+        described_class.create(
+          { customer: "cus_1", billingType: "PIX", value: 100 },
+          api_key: "sub_key",
+          retryable: false,
+          timeout: 65
+        )
+      end.to raise_error(Asaas::ServerError)
+
+      expect(request).to have_been_requested.once
+    end
+
+    it "does not retry a timeout when retryable is false" do
+      Asaas.configure do |config|
+        config.max_retries = 2
+        config.retry_delay = 0
+      end
+      request = stub_request(:post, "#{ASAAS_BASE_URL}/payments")
+                .with(
+                  headers: { "access_token" => "sub_key" },
+                  body: { "customer" => "cus_1", "billingType" => "PIX", "value" => 100 }
+                )
+                .to_timeout
+
+      expect do
+        described_class.create(
+          { customer: "cus_1", billingType: "PIX", value: 100 },
+          api_key: "sub_key",
+          retryable: false,
+          timeout: 65
+        )
+      end.to raise_error(Asaas::ConnectionError)
+
+      expect(request).to have_been_requested.once
+    end
+  end
+
+  describe ".pix_qr_code" do
+    it "GETs /payments/:id/pixQrCode with the per-call API key" do
+      request = stub_request(:get, "#{ASAAS_BASE_URL}/payments/pay_1/pixQrCode")
+                .with(headers: { "access_token" => "sub_key" })
+                .to_return(status: 200, body: { "encodedImage" => "image_data" }.to_json)
+
+      result = described_class.pix_qr_code("pay_1", api_key: "sub_key")
+
+      expect(result).to be_a(Asaas::AsaasObject)
+      expect(result.encodedImage).to eq("image_data")
+      expect(request).to have_been_requested.once
+    end
   end
 
   describe ".retrieve" do

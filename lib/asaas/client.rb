@@ -9,6 +9,17 @@ module Asaas
   class Client
     RETRY_STATUSES     = [429, 500, 502, 503, 504].freeze
     IDEMPOTENT_METHODS = %i[post put patch].freeze
+    SENSITIVE_LOG_KEYS = %w[
+      creditcard
+      creditcardholderinfo
+      creditcardtoken
+      remoteip
+      number
+      cardnumber
+      creditcardnumber
+      ccv
+      cvv
+    ].freeze
     HTTP_METHODS = {
       get: Net::HTTP::Get,
       post: Net::HTTP::Post,
@@ -27,16 +38,16 @@ module Asaas
     # @param params  [Hash]
     # @param headers [Hash]
     # @return [Hash]
-    def request(method, path, params: {}, headers: {})
+    def request(method, path, params: {}, headers: {}, retryable: true, timeout: nil) # rubocop:disable Metrics/ParameterLists
       validate_config!
 
       uri = build_uri(path, method == :get ? params : {})
-      body = method != :get ? params : {}
-      idempotency_key = SecureRandom.uuid if IDEMPOTENT_METHODS.include?(method)
+      body = method == :get ? {} : params
+      generated_key = SecureRandom.uuid if IDEMPOTENT_METHODS.include?(method)
+      request_headers = build_headers(headers, generated_key)
+      operation = -> { perform(method, uri, body, request_headers, timeout: timeout) }
 
-      with_retries do
-        perform(method, uri, body, build_headers(headers, idempotency_key))
-      end
+      retryable ? with_retries(&operation) : operation.call
     end
 
     private
@@ -64,11 +75,11 @@ module Asaas
       headers.merge(extra)
     end
 
-    def perform(method, uri, body, headers)
+    def perform(method, uri, body, headers, timeout: nil)
       http              = Net::HTTP.new(uri.host, uri.port)
       http.use_ssl      = uri.scheme == "https"
-      http.read_timeout = @config.timeout
-      http.open_timeout = @config.timeout
+      http.read_timeout = timeout || @config.timeout
+      http.open_timeout = timeout || @config.timeout
 
       req = build_request(method, uri, headers, body)
 
@@ -174,7 +185,7 @@ module Asaas
                  elsif multipart?(body)
                    " [multipart/form-data: #{body.keys.join(", ")}]"
                  else
-                   " #{body.to_json}"
+                   " #{sanitize(body).to_json}"
                  end
 
       @config.logger.debug("[Asaas] --> #{method.upcase} #{uri}#{body_log}")
@@ -183,7 +194,28 @@ module Asaas
     def log_response(res)
       return unless @config.logger
 
-      @config.logger.debug("[Asaas] <-- #{res.code} #{res.body&.slice(0, 200)}")
+      parsed_body = JSON.parse(res.body.to_s)
+      @config.logger.debug("[Asaas] <-- #{res.code} #{sanitize(parsed_body).to_json}")
+    rescue JSON::ParserError
+      @config.logger.debug("[Asaas] <-- #{res.code} #{res.body.to_s.bytesize} bytes")
+    end
+
+    def sanitize(value)
+      case value
+      when Hash
+        value.each_with_object({}) do |(key, nested_value), sanitized|
+          sanitized[key] = sensitive_key?(key) ? "[FILTERED]" : sanitize(nested_value)
+        end
+      when Array
+        value.map { |nested_value| sanitize(nested_value) }
+      else
+        value
+      end
+    end
+
+    def sensitive_key?(key)
+      normalized_key = key.to_s.downcase.gsub(/[^a-z0-9]/, "")
+      SENSITIVE_LOG_KEYS.include?(normalized_key)
     end
   end
 end

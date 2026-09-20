@@ -103,6 +103,56 @@ RSpec.describe Asaas::Client do
         expect(received_keys.size).to eq(2)
         expect(received_keys.uniq.size).to eq(1)
       end
+
+      it "makes one transport call after a retryable response when retryable is false" do
+        Asaas.configure do |c|
+          c.api_key     = api_key
+          c.sandbox     = true
+          c.max_retries = 2
+          c.retry_delay = 0
+        end
+        request = stub_request(:post, "#{base_url}/payments")
+                  .to_return(status: 503, body: {}.to_json)
+
+        expect do
+          client.request(:post, "/payments", retryable: false)
+        end.to raise_error(Asaas::ServerError)
+
+        expect(request).to have_been_requested.once
+      end
+
+      it "makes one transport call after a timeout when retryable is false" do
+        Asaas.configure do |c|
+          c.api_key     = api_key
+          c.sandbox     = true
+          c.max_retries = 2
+          c.retry_delay = 0
+        end
+        request = stub_request(:post, "#{base_url}/payments").to_timeout
+
+        expect do
+          client.request(:post, "/payments", retryable: false)
+        end.to raise_error(Asaas::ConnectionError)
+
+        expect(request).to have_been_requested.once
+      end
+
+      it "applies a per-call timeout without changing the global timeout" do
+        http = instance_double(Net::HTTP)
+        allow(Net::HTTP).to receive(:new).and_return(http)
+        allow(http).to receive(:use_ssl=)
+        allow(http).to receive(:read_timeout=)
+        allow(http).to receive(:open_timeout=)
+        allow(http).to receive(:request).and_return(
+          instance_double(Net::HTTPResponse, code: "200", body: "{}", :[] => nil)
+        )
+
+        client.request(:post, "/payments", timeout: 65)
+
+        expect(http).to have_received(:read_timeout=).with(65)
+        expect(http).to have_received(:open_timeout=).with(65)
+        expect(Asaas.config.timeout).to eq(30)
+      end
     end
 
     context "authentication" do
@@ -224,6 +274,94 @@ RSpec.describe Asaas::Client do
         end
 
         expect(WebMock).to have_requested(:get, "#{base_url}/customers").once
+      end
+
+      it "keeps retrying GET requests by default" do
+        request = stub_request(:get, "#{base_url}/customers")
+                  .to_return(status: 503, body: {}.to_json).then
+                  .to_return(status: 200, body: { "ok" => true }.to_json)
+
+        result = client.request(:get, "/customers")
+
+        expect(result).to eq({ "ok" => true })
+        expect(request).to have_been_requested.twice
+      end
+    end
+
+    context "logging" do
+      let(:logger) do
+        Class.new do
+          attr_reader :messages
+
+          def initialize
+            @messages = []
+          end
+
+          def debug(message)
+            messages << message
+          end
+        end.new
+      end
+
+      let(:log_output) { logger.messages.join("\n") }
+
+      before do
+        Asaas.configure do |c|
+          c.api_key = api_key
+          c.sandbox = true
+          c.logger = logger
+        end
+      end
+
+      after { Asaas.configure { |c| c.logger = nil } }
+
+      it "filters card data from request and parsed response logs" do
+        stub_request(:post, "#{base_url}/creditCard/tokenizeCreditCard")
+          .to_return(
+            status: 200,
+            body: {
+              "creditCardToken" => "returned_token_secret",
+              "remoteIp" => "203.0.113.9",
+              "cardNumber" => "5555444433332222",
+              "ccv" => "999",
+              "CVV" => "888"
+            }.to_json
+          )
+
+        client.request(
+          :post,
+          "/creditCard/tokenizeCreditCard",
+          params: {
+            customer: "cus_1",
+            creditCard: { number: "4444333322221111", ccv: "764" },
+            creditCardHolderInfo: { cpfCnpj: "98765432100" },
+            remoteIp: "198.51.100.7"
+          },
+          retryable: false
+        )
+
+        expect(log_output).to include("[FILTERED]")
+        expect(log_output).not_to include(
+          "4444333322221111",
+          "764",
+          "98765432100",
+          "198.51.100.7",
+          "returned_token_secret",
+          "203.0.113.9",
+          "5555444433332222",
+          "999",
+          "888"
+        )
+      end
+
+      it "logs status and byte length without the raw body when response JSON is invalid" do
+        stub_request(:get, "#{base_url}/customers")
+          .to_return(status: 200, body: "raw-secret-body")
+
+        client.request(:get, "/customers")
+
+        expect(log_output).to include("200", "15 bytes")
+        expect(log_output).not_to include("raw-secret-body")
       end
     end
 
