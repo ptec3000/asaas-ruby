@@ -48,6 +48,19 @@ Asaas::Resources::Payment.create(
 Asaas::Resources::Finance.balance(api_key: "aact_subaccount_key")
 ```
 
+### Stable idempotency keys for creates
+
+`Base.create` resources accept `idempotency_key:` in the final options hash.
+It is sent only as the `Idempotency-Key` HTTP header, and the same value is
+preserved if the request is retried. The key must be a non-blank `String`.
+
+```ruby
+Asaas::Resources::Customer.create(
+  { name: "João Silva", email: "joao@example.com" },
+  idempotency_key: "scoby-customer-42"
+)
+```
+
 `ListObject` pages returned with an override keep that override when paginated:
 
 ```ruby

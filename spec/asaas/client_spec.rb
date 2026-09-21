@@ -58,6 +58,17 @@ RSpec.describe Asaas::Client do
 
         expect(stub).to have_been_requested
       end
+
+      it "does not add an Idempotency-Key to GET requests" do
+        key = "scoby-customer-42"
+        stub = stub_request(:get, "#{base_url}/customers")
+               .with { |request| request.headers["Idempotency-Key"].nil? }
+               .to_return(status: 200, body: {}.to_json)
+
+        client.request(:get, "/customers", idempotency_key: key)
+
+        expect(stub).to have_been_requested
+      end
     end
 
     context "POST" do
@@ -82,6 +93,46 @@ RSpec.describe Asaas::Client do
         expect(stub).to have_been_requested
       end
 
+      it "uses an explicit Idempotency-Key without serializing it into the body" do
+        key = "scoby-customer-42"
+        stub = stub_request(:post, "#{base_url}/customers")
+               .with(
+                 body: { "name" => "Maria" },
+                 headers: { "Idempotency-Key" => key }
+               )
+               .to_return(status: 200, body: {}.to_json)
+
+        client.request(:post, "/customers", params: { name: "Maria" }, idempotency_key: key)
+
+        expect(stub).to have_been_requested
+      end
+
+      it "prefers an explicit Idempotency-Key over a conflicting custom header" do
+        key = "scoby-customer-42"
+        stub = stub_request(:post, "#{base_url}/customers")
+               .with(headers: { "Idempotency-Key" => key })
+               .to_return(status: 200, body: {}.to_json)
+
+        client.request(
+          :post,
+          "/customers",
+          headers: { "Idempotency-Key" => "other-key" },
+          idempotency_key: key
+        )
+
+        expect(stub).to have_been_requested
+      end
+
+      it "rejects blank explicit Idempotency-Keys before sending a request" do
+        request = stub_request(:post, "#{base_url}/customers")
+
+        expect do
+          client.request(:post, "/customers", idempotency_key: "  ")
+        end.to raise_error(ArgumentError, "idempotency_key must be a non-blank String")
+
+        expect(request).not_to have_been_requested
+      end
+
       it "reuses the same Idempotency-Key across retries" do
         Asaas.configure do |c|
           c.api_key     = api_key
@@ -102,6 +153,28 @@ RSpec.describe Asaas::Client do
 
         expect(received_keys.size).to eq(2)
         expect(received_keys.uniq.size).to eq(1)
+      end
+
+      it "reuses an explicit Idempotency-Key across retries" do
+        Asaas.configure do |c|
+          c.api_key     = api_key
+          c.sandbox     = true
+          c.max_retries = 1
+          c.retry_delay = 0
+        end
+
+        received_keys = []
+        key = "scoby-customer-42"
+
+        stub_request(:post, "#{base_url}/customers")
+          .to_return do |req|
+            received_keys << req.headers["Idempotency-Key"]
+            received_keys.size == 1 ? { status: 500, body: {}.to_json } : { status: 200, body: {}.to_json }
+          end
+
+        client.request(:post, "/customers", params: {}, idempotency_key: key)
+
+        expect(received_keys).to eq([key, key])
       end
 
       it "makes one transport call after a retryable response when retryable is false" do
@@ -352,6 +425,16 @@ RSpec.describe Asaas::Client do
           "999",
           "888"
         )
+      end
+
+      it "does not include explicit Idempotency-Keys in request logs" do
+        key = "scoby-customer-42"
+        stub_request(:post, "#{base_url}/customers")
+          .to_return(status: 200, body: {}.to_json)
+
+        client.request(:post, "/customers", params: { name: "Maria" }, idempotency_key: key)
+
+        expect(log_output).not_to include(key)
       end
 
       it "filters nested authentication secrets from request logs without hiding operational fields" do

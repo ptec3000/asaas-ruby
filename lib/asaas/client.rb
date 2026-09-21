@@ -59,13 +59,13 @@ module Asaas
     # @param params  [Hash]
     # @param headers [Hash]
     # @return [Hash]
-    def request(method, path, params: {}, headers: {}, retryable: true, timeout: nil) # rubocop:disable Metrics/ParameterLists
+    def request(method, path, params: {}, headers: {}, retryable: true, timeout: nil, idempotency_key: nil) # rubocop:disable Metrics/ParameterLists
       validate_config!
 
       uri = build_uri(path, method == :get ? params : {})
       body = method == :get ? {} : params
-      generated_key = SecureRandom.uuid if IDEMPOTENT_METHODS.include?(method)
-      request_headers = build_headers(headers, generated_key)
+      request_headers = build_headers(headers, idempotency_key_for(method, idempotency_key))
+      request_headers["Idempotency-Key"] = idempotency_key if explicit_idempotency_key?(method, idempotency_key)
       operation = -> { perform(method, uri, body, request_headers, timeout: timeout) }
 
       retryable ? with_retries(&operation) : operation.call
@@ -94,6 +94,18 @@ module Asaas
       }
       headers["Idempotency-Key"] = idempotency_key if idempotency_key
       headers.merge(extra)
+    end
+
+    def idempotency_key_for(method, explicit_key)
+      return unless IDEMPOTENT_METHODS.include?(method)
+      return SecureRandom.uuid if explicit_key.nil?
+      return explicit_key if explicit_key.is_a?(String) && !explicit_key.strip.empty?
+
+      raise ArgumentError, "idempotency_key must be a non-blank String"
+    end
+
+    def explicit_idempotency_key?(method, key)
+      IDEMPOTENT_METHODS.include?(method) && !key.nil?
     end
 
     def perform(method, uri, body, headers, timeout: nil)

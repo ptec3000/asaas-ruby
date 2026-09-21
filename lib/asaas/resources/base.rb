@@ -15,7 +15,8 @@ module Asaas
           resource_path,
           params: params,
           retryable: opts.fetch(:retryable, true),
-          timeout: opts[:timeout]
+          timeout: opts[:timeout],
+          idempotency_key: opts[:idempotency_key]
         )
         AsaasObject.construct_from(response)
       end

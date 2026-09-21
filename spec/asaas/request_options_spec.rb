@@ -18,6 +18,20 @@ RSpec.describe "Per-call api_key override" do
       expect(stub).to have_been_requested
     end
 
+    it "forwards an explicit idempotency key from .create as a request header" do
+      key = "scoby-customer-42"
+      stub = stub_request(:post, "#{base_url}/customers")
+             .with(
+               body: { "name" => "Maria" },
+               headers: { "Idempotency-Key" => key }
+             )
+             .to_return(status: 200, body: { "id" => "cus_1" }.to_json)
+
+      Asaas::Resources::Customer.create({ name: "Maria" }, idempotency_key: key)
+
+      expect(stub).to have_been_requested
+    end
+
     it "uses the override on .retrieve" do
       stub = stub_request(:get, "#{base_url}/customers/cus_1")
              .with(headers: { "access_token" => override_key })
