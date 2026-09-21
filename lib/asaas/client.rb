@@ -9,16 +9,37 @@ module Asaas
   class Client
     RETRY_STATUSES     = [429, 500, 502, 503, 504].freeze
     IDEMPOTENT_METHODS = %i[post put patch].freeze
+    MAX_LOG_BODY_BYTES = 200
     SENSITIVE_LOG_KEYS = %w[
+      accesskey
+      accesssecret
+      accesstoken
+      apikey
+      apisecret
+      authkey
+      authenticationtoken
+      authorization
+      authtoken
+      bearertoken
+      clientsecret
       creditcard
       creditcardholderinfo
       creditcardtoken
-      remoteip
-      number
+      idtoken
+      password
+      privatekey
+      refreshtoken
       cardnumber
       creditcardnumber
       ccv
       cvv
+      number
+      remoteip
+      secret
+      secretkey
+      sessiontoken
+      token
+      webhooktoken
     ].freeze
     HTTP_METHODS = {
       get: Net::HTTP::Get,
@@ -195,9 +216,16 @@ module Asaas
       return unless @config.logger
 
       parsed_body = JSON.parse(res.body.to_s)
-      @config.logger.debug("[Asaas] <-- #{res.code} #{sanitize(parsed_body).to_json}")
+      @config.logger.debug("[Asaas] <-- #{res.code} #{bounded_log_json(parsed_body)}")
     rescue JSON::ParserError
       @config.logger.debug("[Asaas] <-- #{res.code} #{res.body.to_s.bytesize} bytes")
+    end
+
+    def bounded_log_json(value)
+      sanitized_json = JSON.generate(sanitize(value))
+      return sanitized_json if sanitized_json.bytesize <= MAX_LOG_BODY_BYTES
+
+      JSON.generate("_truncated" => true, "_bytes" => sanitized_json.bytesize)
     end
 
     def sanitize(value)

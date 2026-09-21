@@ -354,6 +354,135 @@ RSpec.describe Asaas::Client do
         )
       end
 
+      it "filters nested authentication secrets from request logs without hiding operational fields" do
+        stub_request(:post, "#{base_url}/webhooks")
+          .to_return(status: 200, body: {}.to_json)
+
+        client.request(
+          :post,
+          "/webhooks",
+          params: {
+            webhooks: [
+              {
+                authToken: "webhook-auth-secret",
+                event: "PAYMENT_CREATED",
+                tokenCount: 2
+              },
+              {
+                "AUTH_TOKEN" => "uppercase-auth-secret",
+                "authenticationType" => "TOKEN"
+              }
+            ],
+            credentials: {
+              accessToken: "access-token-secret",
+              refresh_token: "refresh-token-secret",
+              clientSecret: "client-secret-value",
+              secret: "generic-secret-value",
+              secretary: "operations"
+            }
+          }
+        )
+
+        request_log = logger.messages.find { |message| message.include?("[Asaas] -->") }
+        logged_body = request_log.delete_prefix("[Asaas] --> POST #{base_url}/webhooks ")
+
+        expect(JSON.parse(logged_body)).to eq(
+          {
+            "webhooks" => [
+              {
+                "authToken" => "[FILTERED]",
+                "event" => "PAYMENT_CREATED",
+                "tokenCount" => 2
+              },
+              {
+                "AUTH_TOKEN" => "[FILTERED]",
+                "authenticationType" => "TOKEN"
+              }
+            ],
+            "credentials" => {
+              "accessToken" => "[FILTERED]",
+              "refresh_token" => "[FILTERED]",
+              "clientSecret" => "[FILTERED]",
+              "secret" => "[FILTERED]",
+              "secretary" => "operations"
+            }
+          }
+        )
+        expect(log_output).not_to include(
+          "webhook-auth-secret",
+          "uppercase-auth-secret",
+          "access-token-secret",
+          "refresh-token-secret",
+          "client-secret-value",
+          "generic-secret-value"
+        )
+      end
+
+      it "filters nested API keys from response logs without hiding operational fields" do
+        stub_request(:get, "#{base_url}/accounts")
+          .to_return(
+            status: 200,
+            body: {
+              "apiKey" => "response-api-secret",
+              "accounts" => [
+                {
+                  "API_KEY" => "uppercase-api-secret",
+                  "authorization" => "Bearer response-secret",
+                  "status" => "ACTIVE"
+                }
+              ],
+              "apiKeyStatus" => "ENABLED",
+              "tokenCount" => 3,
+              "secretary" => "operations"
+            }.to_json
+          )
+
+        client.request(:get, "/accounts")
+
+        response_log = logger.messages.find { |message| message.include?("[Asaas] <--") }
+        logged_body = response_log.split(" ", 4).last
+
+        expect(JSON.parse(logged_body)).to eq(
+          {
+            "apiKey" => "[FILTERED]",
+            "accounts" => [
+              {
+                "API_KEY" => "[FILTERED]",
+                "authorization" => "[FILTERED]",
+                "status" => "ACTIVE"
+              }
+            ],
+            "apiKeyStatus" => "ENABLED",
+            "tokenCount" => 3,
+            "secretary" => "operations"
+          }
+        )
+        expect(log_output).not_to include(
+          "response-api-secret",
+          "uppercase-api-secret",
+          "Bearer response-secret"
+        )
+      end
+
+      it "logs a bounded parseable summary for a large UTF-8 response" do
+        large_value = "ação 🎲 " * 80
+        stub_request(:get, "#{base_url}/customers")
+          .to_return(
+            status: 200,
+            body: { "description" => large_value, "status" => "ACTIVE" }.to_json
+          )
+
+        client.request(:get, "/customers")
+
+        response_log = logger.messages.find { |message| message.include?("[Asaas] <--") }
+        logged_body = response_log.split(" ", 4).last
+        parsed_body = JSON.parse(logged_body)
+
+        expect(logged_body.bytesize).to be <= 200
+        expect(parsed_body).to include("_truncated" => true)
+        expect(log_output).not_to include(large_value)
+      end
+
       it "logs status and byte length without the raw body when response JSON is invalid" do
         stub_request(:get, "#{base_url}/customers")
           .to_return(status: 200, body: "raw-secret-body")
