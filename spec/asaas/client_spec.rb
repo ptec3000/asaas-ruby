@@ -123,6 +123,28 @@ RSpec.describe Asaas::Client do
         expect(stub).to have_been_requested
       end
 
+      it "replaces case-insensitive Idempotency-Key header variants with the explicit key" do
+        key = "scoby-customer-42"
+        idempotency_headers = []
+
+        stub_request(:post, "#{base_url}/customers")
+          .to_return do |request|
+            idempotency_headers << request.headers.select do |name, _|
+              name.casecmp?("Idempotency-Key")
+            end
+            { status: 200, body: {}.to_json }
+          end
+
+        client.request(
+          :post,
+          "/customers",
+          headers: { "idempotency-key" => "other-key" },
+          idempotency_key: key
+        )
+
+        expect(idempotency_headers).to eq([{ "Idempotency-Key" => key }])
+      end
+
       it "rejects blank explicit Idempotency-Keys before sending a request" do
         request = stub_request(:post, "#{base_url}/customers")
 
@@ -175,6 +197,30 @@ RSpec.describe Asaas::Client do
         client.request(:post, "/customers", params: {}, idempotency_key: key)
 
         expect(received_keys).to eq([key, key])
+      end
+
+      it "keeps an explicit Idempotency-Key stable when its caller mutates the original between retries" do
+        Asaas.configure do |c|
+          c.api_key     = api_key
+          c.sandbox     = true
+          c.max_retries = 1
+          c.retry_delay = 0
+        end
+
+        expected_key = "scoby-customer-42"
+        key = expected_key.dup
+        received_keys = []
+
+        stub_request(:post, "#{base_url}/customers")
+          .to_return do |request|
+            received_keys << request.headers["Idempotency-Key"]
+            key.replace("mutated-key") if received_keys.one?
+            received_keys.one? ? { status: 500, body: {}.to_json } : { status: 200, body: {}.to_json }
+          end
+
+        client.request(:post, "/customers", params: {}, idempotency_key: key)
+
+        expect(received_keys).to eq([expected_key, expected_key])
       end
 
       it "makes one transport call after a retryable response when retryable is false" do

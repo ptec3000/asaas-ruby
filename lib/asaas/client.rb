@@ -64,8 +64,11 @@ module Asaas
 
       uri = build_uri(path, method == :get ? params : {})
       body = method == :get ? {} : params
-      request_headers = build_headers(headers, idempotency_key_for(method, idempotency_key))
-      request_headers["Idempotency-Key"] = idempotency_key if explicit_idempotency_key?(method, idempotency_key)
+      request_idempotency_key = idempotency_key_for(method, idempotency_key)
+      request_headers = build_headers(headers, request_idempotency_key)
+      if explicit_idempotency_key?(method, idempotency_key)
+        replace_idempotency_key(request_headers, request_idempotency_key)
+      end
       operation = -> { perform(method, uri, body, request_headers, timeout: timeout) }
 
       retryable ? with_retries(&operation) : operation.call
@@ -99,13 +102,18 @@ module Asaas
     def idempotency_key_for(method, explicit_key)
       return unless IDEMPOTENT_METHODS.include?(method)
       return SecureRandom.uuid if explicit_key.nil?
-      return explicit_key if explicit_key.is_a?(String) && !explicit_key.strip.empty?
+      return explicit_key.dup.freeze if explicit_key.is_a?(String) && !explicit_key.strip.empty?
 
       raise ArgumentError, "idempotency_key must be a non-blank String"
     end
 
     def explicit_idempotency_key?(method, key)
       IDEMPOTENT_METHODS.include?(method) && !key.nil?
+    end
+
+    def replace_idempotency_key(headers, key)
+      headers.delete_if { |name, _| name.to_s.casecmp?("Idempotency-Key") }
+      headers["Idempotency-Key"] = key
     end
 
     def perform(method, uri, body, headers, timeout: nil)
